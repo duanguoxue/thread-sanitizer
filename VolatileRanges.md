@@ -1,0 +1,10 @@
+`ThreadSanitizer` (and other similar tools -- [AddressSanitizer](https://code.google.com/p/address-sanitizer/wiki/AddressSanitizer), [MemorySanitizer](https://code.google.com/p/memory-sanitizer/)) significantly increase memory consumption of the application under test (~3-10x). Sometimes it leads to either OOM kill or machine hang.
+
+There are [ongoing discussions](http://marc.info/?l=linux-mm&m=136556213608483&w=2) on Linux kernel mailing lists about so called volatile ranges. Volatile ranges can help `ThreadSanitizer` prevent OOM kills and machine hangs. But we have a slightly different use case from what is currently discussed.
+
+`ThreadSanitizer` needs shadow memory for application memory. So we mmap(NORESERVE) ~70 TBs of memory at startup, and then access it when the application accesses own memory. The shadow memory is 4-8x in size relative to application memory. So if an app uses e.g. 10GB of memory we will add e.g. 40GB of shadow memory to RSS. At this point it's likely that either get OOM kill or kill the machine.
+
+We would like to mark the shadow memory region (e.g. 70TB) as volatile at startup, so that the kernel can reuse the pages as it needs them. We do memory accesses to the range all the time. So we can not mark it as NONVOLATILE before use. Also we want to preserve volatility after memory accesses to the range, we can not re-mark it as VOLATILE after the memory accesses. So marking is basically zero-frequency for us (once at startup). `ThreadSanitizer` is OK if the memory goes away at any time, and there is not time when we need it to be stable.
+Objects in the memory are 8-byte and aligned (do not cross page boundaries), we always access them with 8-byte atomic loads and stores.
+SIGBUS during accesses to unmapped pages is very undesirable. We are absolutely OK with zero pages.
+The memory is always anonymous and always VRANGE\_PARTIAL. The volatility must be preserved across fork's. We don't care about exec.
